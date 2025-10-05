@@ -1,0 +1,10 @@
+Package: till
+Version: 1.0.0-2
+Section: utils
+Priority: optional
+Architecture: all
+Depends: bash (>= 5), coreutils, mount, util-linux, debootstrap, apt
+Maintainer: You <0foo.dev>
+Description: Tiny chroot manager for per-project Debian envs
+ Provides 'till build' to bootstrap a minimal Debian chroot under the project,
+ and 'till enter' to chroot into it with the current working directory bind-mounted.

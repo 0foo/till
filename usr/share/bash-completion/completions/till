@@ -1,0 +1,21 @@
+# bash completion for till
+_till()
+{
+  local cur prev words cword
+  _init_completion || return
+
+  if [[ $cword -eq 1 ]]; then
+    COMPREPLY=( $(compgen -W "build enter --help -h" -- "$cur") )
+    return
+  fi
+
+  case "${words[1]}" in
+    build)
+      COMPREPLY=( $(compgen -W "--path --release --mirror --packages --packages-file --packages-mode" -- "$cur") )
+      ;;
+    enter)
+      COMPREPLY=( $(compgen -W "--path --no-bind-pwd --as-root" -- "$cur") )
+      ;;
+  esac
+}
+complete -F _till till

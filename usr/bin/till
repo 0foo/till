@@ -1,0 +1,276 @@
+#!/usr/bin/env bash
+# till — tiny chroot manager for per-project Debian environments
+# - till build: bootstrap a Debian chroot and install packages
+# - till enter: enter the chroot; bind-mount $PWD (optional); cd there
+#
+# Config precedence (highest first):
+#   ./.till/config, ./.tillrc, ~/.config/till/config, /etc/till/config
+# Keys:
+#   PATH=<path>              # chroot root (default: $PWD/.till/debian)
+#   RELEASE=<codename>       # default: bookworm
+#   MIRROR=<url>             # default: http://deb.debian.org/debian
+#   PACKAGES_MODE=append|replace  # default: append to built-ins
+#   PACKAGES="space sep list"
+#   PACKAGES_FILE=<file with one pkg per line>
+#
+# CLI flags override config values.
+
+set -euo pipefail
+
+# -------------------------
+# Defaults (overridable via config or CLI)
+# -------------------------
+TILL_PATH_DEFAULT="${TILL_PATH_DEFAULT:-$PWD/.till/debian}"
+TILL_RELEASE_DEFAULT="${TILL_RELEASE_DEFAULT:-bookworm}"
+TILL_MIRROR_DEFAULT="${TILL_MIRROR_DEFAULT:-http://deb.debian.org/debian}"
+
+# Built-in common tools (contains sudo and ls via coreutils)
+COMMON_PKGS_DEFAULT=(
+  bash coreutils findutils grep sed gawk tar gzip bzip2 xz-utils less
+  ca-certificates curl wget iputils-ping procps nano vim-tiny unzip zip sudo
+)
+
+# -------------------------
+# Config loading utilities
+# -------------------------
+TILL_CONFIG_PROJECT_1="$PWD/.till/config"
+TILL_CONFIG_PROJECT_2="$PWD/.tillrc"
+TILL_CONFIG_USER="$HOME/.config/till/config"
+TILL_CONFIG_SYSTEM="/etc/till/config"
+
+CFG_PATH=""
+CFG_RELEASE=""
+CFG_MIRROR=""
+CFG_PACKAGES_MODE=""
+CFG_PACKAGES=""
+CFG_PACKAGES_FILE=""
+
+_read_kv_file() {
+  local f="$1"
+  [[ -f "$f" ]] || return 0
+  while IFS= read -r line; do
+    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+    if [[ "$line" =~ ^([A-Z_]+)=(.*)$ ]]; then
+      local k="${BASH_REMATCH[1]}"
+      local v="${BASH_REMATCH[2]}"
+      # strip simple surrounding quotes
+      v="${v%\"}"; v="${v#\"}"; v="${v%\'}"; v="${v#\'}"
+      case "$k" in
+        PATH)           CFG_PATH="$v" ;;
+        RELEASE)        CFG_RELEASE="$v" ;;
+        MIRROR)         CFG_MIRROR="$v" ;;
+        PACKAGES_MODE)  CFG_PACKAGES_MODE="$v" ;;
+        PACKAGES)       CFG_PACKAGES="$v" ;;
+        PACKAGES_FILE)  CFG_PACKAGES_FILE="$v" ;;
+      esac
+    fi
+  done < "$f"
+}
+
+_load_config() {
+  _read_kv_file "$TILL_CONFIG_SYSTEM"
+  _read_kv_file "$TILL_CONFIG_USER"
+  _read_kv_file "$TILL_CONFIG_PROJECT_2"
+  _read_kv_file "$TILL_CONFIG_PROJECT_1"
+}
+
+_packages_from_file() {
+  local f="$1"
+  [[ -f "$f" ]] || return
+  while IFS= read -r line; do
+    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+    printf '%s\n' "$line"
+  done < "$f"
+}
+
+# -------------------------
+# Helpers
+# -------------------------
+usage() {
+  cat <<EOF
+till — tiny chroot manager for per-project Debian environments
+
+Usage:
+  till build [--path PATH] [--release REL] [--mirror URL]
+             [--packages "p1 p2 ..."] [--packages-file FILE] [--packages-mode append|replace]
+
+  till enter [--path PATH] [--no-bind-pwd] [--as-root]
+
+Defaults:
+  PATH    = ${TILL_PATH_DEFAULT}
+  REL     = ${TILL_RELEASE_DEFAULT}
+  MIRROR  = ${TILL_MIRROR_DEFAULT}
+
+Examples:
+  till build
+  till enter
+  till build --path ~/envs/projA --packages "git python3"
+  till enter --path ~/envs/projA --as-root
+EOF
+}
+
+sudo_exec() {
+  if [[ $EUID -ne 0 ]]; then
+    exec sudo --preserve-env=PATH,TILL_PATH_DEFAULT,TILL_RELEASE_DEFAULT,TILL_MIRROR_DEFAULT "$0" "$@"
+  fi
+}
+
+mounted() {
+  mountpoint -q "$1" 2>/dev/null || grep -q " $1 " /proc/mounts
+}
+
+# -------------------------
+# Commands
+# -------------------------
+cmd_build() {
+  # start from defaults
+  local path="$TILL_PATH_DEFAULT"
+  local rel="$TILL_RELEASE_DEFAULT"
+  local mirror="$TILL_MIRROR_DEFAULT"
+  local pkgs_mode="append"
+  local -a pkgs=("${COMMON_PKGS_DEFAULT[@]}")
+
+  # apply config
+  [[ -n "$CFG_PATH" ]] && path="$CFG_PATH"
+  [[ -n "$CFG_RELEASE" ]] && rel="$CFG_RELEASE"
+  [[ -n "$CFG_MIRROR" ]] && mirror="$CFG_MIRROR"
+  [[ -n "$CFG_PACKAGES_MODE" ]] && pkgs_mode="$CFG_PACKAGES_MODE"
+
+  if [[ -n "$CFG_PACKAGES" || -n "$CFG_PACKAGES_FILE" ]]; then
+    mapfile -t extras < <{
+      [[ -n "$CFG_PACKAGES" ]] && printf "%s\n" $CFG_PACKAGES
+      [[ -n "$CFG_PACKAGES_FILE" ]] && _packages_from_file "$CFG_PACKAGES_FILE"
+    }
+    if [[ "${pkgs_mode}" == "replace" ]]; then
+      pkgs=("${extras[@]}")
+    else
+      pkgs+=("${extras[@]}")
+    fi
+  fi
+
+  # parse CLI flags (override config)
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --path)          path="$2"; shift 2 ;;
+      --release)       rel="$2"; shift 2 ;;
+      --mirror)        mirror="$2"; shift 2 ;;
+      --packages)      pkgs=(); read -r -a pkgs <<<"$2"; shift 2 ;;
+      --packages-file) mapfile -t pkgs < <( _packages_from_file "$2" ); shift 2 ;;
+      --packages-mode) pkgs_mode="$2"; shift 2 ;;
+      *) echo "Unknown flag: $1"; usage; exit 2 ;;
+    esac
+  done
+
+  sudo_exec "build" --path "$path" --release "$rel" --mirror "$mirror" --packages "${pkgs[*]}"
+
+  echo "[*] till build: path=$path release=$rel mirror=$mirror"
+  # Ensure debootstrap
+  if ! dpkg -s debootstrap >/dev/null 2>&1; then
+    echo "[+] Installing debootstrap ..."
+    apt-get update -y
+    apt-get install -y debootstrap
+  fi
+
+  # Bootstrap if needed
+  if [[ -x "$path/bin/sh" && -f "$path/etc/debian_version" ]]; then
+    echo "[=] Rootfs already exists at $path"
+  else
+    echo "[+] Bootstrapping minimal Debian ($rel) into $path"
+    mkdir -p "$path"
+    debootstrap --variant=minbase "$rel" "$path" "$mirror"
+    # Prevent services from starting during apt installs inside chroot
+    cat > "$path/usr/sbin/policy-rc.d" <<'EOF'
+#!/bin/sh
+exit 101
+EOF
+    chmod +x "$path/usr/sbin/policy-rc.d"
+  fi
+
+  # Minimal networking for apt: copy resolver (no mounts)
+  if [[ -f /etc/resolv.conf ]]; then
+    mkdir -p "$path/etc"
+    cp -f /etc/resolv.conf "$path/etc/resolv.conf"
+  fi
+
+  echo "[+] Installing packages: ${pkgs[*]}"
+  chroot "$path" /bin/bash -lc "apt-get update -y"
+  chroot "$path" /bin/bash -lc "DEBIAN_FRONTEND=noninteractive apt-get install -y ${pkgs[*]}"
+  chroot "$path" /bin/bash -lc "apt-get clean"
+  echo "[✓] Build complete at $path"
+}
+
+cmd_enter() {
+  local path="$TILL_PATH_DEFAULT"
+  local bind_pwd=1
+  local as_root=0
+
+  # allow config PATH as default
+  [[ -n "$CFG_PATH" ]] && path="$CFG_PATH"
+
+  # parse flags
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --path)        path="$2"; shift 2 ;;
+      --no-bind-pwd) bind_pwd=0; shift ;;
+      --as-root)     as_root=1; shift ;;
+      *) echo "Unknown flag: $1"; usage; exit 2 ;;
+    esac
+  done
+
+  sudo_exec "enter" --path "$path" $([[ $bind_pwd -eq 0 ]] && echo --no-bind-pwd) $([[ $as_root -eq 1 ]] && echo --as-root)
+
+  if [[ ! -f "$path/etc/debian_version" ]]; then
+    echo "[!] $path does not look like a Debian chroot. Run 'till build' first or fix --path."
+    exit 1
+  fi
+
+  local target="$path$PWD"
+  if [[ $bind_pwd -eq 1 ]]; then
+    echo "[+] Bind-mounting:"
+    echo "    host   $PWD"
+    echo "    chroot $target"
+    mkdir -p "$target"
+    if ! mounted "$target"; then
+      mount --bind "$PWD" "$target"
+    fi
+  fi
+
+  cleanup() {
+    if [[ $bind_pwd -eq 1 ]] && mounted "$target"; then
+      echo "[+] Unmounting $target"
+      umount -l "$target" || true
+    fi
+  }
+  trap cleanup EXIT
+
+  if [[ $as_root -eq 1 ]]; then
+    if [[ $bind_pwd -eq 1 ]]; then
+      chroot "$path" /bin/bash -lc "cd '$PWD'; exec bash -l"
+    else
+      chroot "$path" /bin/bash --login
+    fi
+  else
+    local uid gid; uid="$(id -u)"; gid="$(id -g)"
+    if [[ $bind_pwd -eq 1 ]]; then
+      chroot --userspec="${uid}:${gid}" "$path" /bin/bash -lc "cd '$PWD'; exec bash -l"
+    else
+      chroot --userspec="${uid}:${gid}" "$path" /bin/bash --login
+    fi
+  fi
+}
+
+# -------------------------
+# Entry
+# -------------------------
+main() {
+  _load_config
+  local sub="${1:-}"; shift || true
+  case "$sub" in
+    build) cmd_build "$@";;
+    enter) cmd_enter "$@";;
+    -h|--help|"") usage;;
+    *) echo "Unknown subcommand: $sub"; usage; exit 2;;
+  esac
+}
+
+main "$@"
