@@ -4,6 +4,8 @@
 `till` makes it easy to create isolated Debian environments per project — using only `debootstrap` and `chroot`.  
 You can build and enter a full Debian root filesystem without containers, VMs, or mounts.
 
+* A fast, minimalist alternative to containerization when you only need filesystem and package isolation—nothing more!
+
 ---
 
 ## Features
