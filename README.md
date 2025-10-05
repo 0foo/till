@@ -7,6 +7,9 @@
 ## Compatibility
 * This has only been tested on Ubuntu 22.04
 * Theoretically should work on any Debian system
+* There's ways to make it more cross compatible by using other flavors of debootstrap
+  * other options are: dbootstrap, cdebootstrap, mmdebstrap, or multistrap
+  * This project currently uses mmbootstrap which only works on Debian
 
 ## 📁 Project Layout
 
