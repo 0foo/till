@@ -3,13 +3,16 @@ Version: 1.1.0-1
 Section: utils
 Priority: optional
 Architecture: all
-Depends: bash (>= 5), coreutils, mmdebstrap, proot
+Depends: bash (>= 5), coreutils, util-linux, mmdebstrap, sudo
+Recommends: bash-completion
 Maintainer: You <0foo.dev>
-Description: Tiny rootless Debian env manager for per-project dev (mmdebstrap + proot)
- This tool bootstraps a minimal Debian rootfs per project using mmdebstrap
- (rootless) and enters it with proot (also rootless). The current working
- directory is bind-mounted inside by default, preserving your usual workflow.
+Description: Tiny per-project Debian chroot environment manager (mmdebstrap + chroot)
+ This tool bootstraps a minimal Debian root filesystem per project using
+ mmdebstrap and provides convenient commands to enter and destroy it
+ using real chroot isolation. By default, it uses unshare-based mount
+ namespaces for automatic cleanup when you exit.
  .
  Commands:
-  - 'till build'  : create/update the rootfs under the project
-  - 'till enter'  : proot into it (use --no-bind-pwd to disable PWD bind, --as-root for fake root)
+  - 'till build'   : create or update the Debian rootfs
+  - 'till enter'   : enter the environment (bind-mounts PWD by default)
+  - 'till destroy' : unmount and delete the environment
