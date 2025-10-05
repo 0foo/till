@@ -1,8 +1,12 @@
 # till — Debian Environment Builder (.deb package layout)
 
-This project packages the **till** script — a lightweight Bash tool for creating isolated Debian root environments using `mmdebstrap` and `chroot`.
+— a lightweight Bash tool for creating isolated Debian root environments using `mmdebstrap` and `chroot`.
 
 ---
+
+## Compatibility
+* This has only been tested on Ubuntu 22.04
+* Theoretically should work on any Debian system
 
 ## 📁 Project Layout
 
