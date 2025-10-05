@@ -1,175 +1,166 @@
-# till — tiny per-project Debian environments (CHROOT edition)
+# till — Debian Environment Builder (.deb package layout)
 
-`till` is a lightweight Bash tool for creating disposable per-project Debian root filesystems using **mmdebstrap** and **real chroot** — no containers, no virtualization, just isolated environments built in directories.
-
----
-
-## Features
-
-- Real Debian rootfs (no Docker required)  
-- Automatic cleanup using private mount namespaces (`unshare -m`)  
-- Configurable package sets per project  
-- Safe destruction and rebuild  
-- Works offline once bootstrapped  
+This project packages the **till** script — a lightweight Bash tool for creating isolated Debian root environments using `mmdebstrap` and `chroot`.
 
 ---
 
-## Commands
+## 📁 Project Layout
 
-| Command | Description |
-|----------|-------------|
-| `till build` | Bootstrap a Debian rootfs (requires sudo). |
-| `till enter` | Enter the rootfs; optionally bind-mount the current working directory. |
-| `till destroy` | Unmount and delete the environment. |
+```
+.
+├── build-deb.sh                # Build helper to create the .deb package
+├── debian-benchmark.sh         # Optional benchmark/test script
+├── README.md                   # This file
+├── src/
+│   ├── DEBIAN/
+│   │   └── control             # Debian package metadata
+│   ├── etc/
+│   │   └── till/
+│   │       └── config          # Default till configuration
+│   └── usr/
+│       ├── bin/
+│       │   └── till            # Main till executable script
+│       └── share/
+│           └── bash-completion/
+│               └── completions/
+│                   └── till    # Bash completion file for till
+└── till_0.1.0_all.deb          # Built Debian package artifact
+```
 
 ---
 
-## Installation
+## 🧩 Package Overview
+
+### Package Name
+`Till`
+
+### Description
+`till` is a minimalist per-project Debian environment manager. It builds, enters, and destroys chroot-based environments using native Debian tools.
+
+### Key Features
+- Uses **mmdebstrap** for fast bootstraps  
+- Supports **per-project configs** (`.till/config`, `.tillrc`)  
+- **Auto-clean** mount namespaces using `unshare -m`  
+- Can bind-mount the current directory  
+- **System-wide**, **user**, and **project-level** configs  
+- Optional **bash-completion** integration
+
+---
+
+## ⚙️ Configuration
+
+Default config file installed at:
+```
+/etc/till/config
+```
+
+Example:
+```ini
+PATH=.till/debian
+RELEASE=bookworm
+MIRROR=http://deb.debian.org/debian
+PACKAGES_MODE=append
+PACKAGES="git build-essential"
+GPG_SECURE=false
+IPV4_ONLY=false
+MOUNT_NAMESPACE=true
+```
+
+---
+
+## 🔧 Installation
 
 ```bash
-sudo install -m 0755 till /usr/local/bin/till
+# install it
+sudo apt install ./till_0.1.0_all.deb
+
+# verify installation
+which till
 till --help
 ```
 
 ---
 
-## Quick Start
+## 🧰 Usage
 
 ```bash
-# Create a minimal Debian environment in ./.till/debian
-till build
+till build      # bootstrap a Debian rootfs
+till enter      # enter the environment
+till destroy    # this is an emergency way to remove the .till folder if all else fails, should generally be able to remove it with rm -rf
+```
 
-# Enter it (bind-mounts your current working directory by default)
-till enter
-
-# Destroy when done
-till destroy
+**Examples:**
+```bash
+till build 
+till enter 
 ```
 
 ---
 
-## Configuration
+## 🪶 Bash Completion
 
-`till` reads configuration from these locations (highest precedence first):
-
-1. `./.till/config`  
-2. `./.tillrc`  
-3. `~/.config/till/config`  
-4. `/etc/till/config`
-
-Example configuration file (`~/.config/till/config`):
-
-```ini
-# Rootfs location
-PATH=.till/debian
-
-# Debian release codename
-RELEASE=bookworm
-
-# Mirror URL
-MIRROR=http://deb.debian.org/debian
-
-# Package handling: append or replace built-ins
-PACKAGES_MODE=append
-PACKAGES="git build-essential"
-
-# Networking & security
-GPG_SECURE=false
-IPV4_ONLY=false
-
-# Namespace mode
-MOUNT_NAMESPACE=true
+Once installed, shell completion will auto-enable on most systems:
+```bash
+source /usr/share/bash-completion/completions/till
 ```
 
-Environment variables:
+To enable manually:
+```bash
+. /usr/share/bash-completion/completions/till
+```
 
-| Variable | Description |
-|-----------|--------------|
-| `TILL_VERBOSE=1` | Enable verbose mode. |
-| `TILL_KEYRING=/path/to/keyring.gpg` | Used when `GPG_SECURE=true`. |
+---
+### Debian Benchmark script
+* There's a benchmark script to find the quickest debian mirror next to you
+* It's a HUGE help 
+* Put the fastest one in the config file will speed things up
+
+
+## 🧱 Debian Package Details
+
+`src/DEBIAN/control` defines the metadata, example:
+
+```
+Package: till
+Version: 0.1.0
+Section: utils
+Priority: optional
+Architecture: all
+Maintainer: Your Name <you@example.com>
+Description: Tiny per-project Debian chroot environments
+ till is a script that lets you quickly build, enter, and destroy
+ self-contained Debian rootfs environments for project isolation.
+```
+
+
 
 ---
 
-## Command Reference
-
-### Build
+## 🧹 Uninstall
 
 ```bash
-till build [--path PATH] [--release REL] [--mirror URL]
-           [--packages "pkg1 pkg2"] [--packages-file FILE]
-           [--packages-mode append|replace] [--verbose]
-```
-
-- Bootstraps a new Debian environment using `mmdebstrap`.
-- Default includes core utilities like `bash`, `coreutils`, `sudo`, `vim-tiny`, etc.
-
-Example:
-
-```bash
-till build --release trixie --packages "git curl make"
+sudo apt remove till
+sudo rm -rf ~/.config/till ~/.till
 ```
 
 ---
 
-### Enter
+## 📜 License
 
-```bash
-till enter [--path PATH] [--no-bind-pwd] [--as-root]
-           [--no-ns] [--verbose]
-```
-
-- Starts a shell inside the chroot.
-- By default, uses a private mount namespace that cleans up automatically when you exit.
-
-Example:
-
-```bash
-till enter --as-root
-```
+MIT License (recommended) — simple and permissive.
 
 ---
 
-### Destroy
+## 🧠 Notes
 
-```bash
-till destroy [--path PATH] [--force] [--verbose]
-```
-
-- Unmounts all mounts and deletes the rootfs directory.
-
-Example:
-
-```bash
-till destroy --force
-```
+- Designed for Debian/Ubuntu systems  
+- Requires: `mmdebstrap`, `sudo`, `mount`, `bash (>=5)`  which should be installed with package manager
+- Optional: `curl` or `wget` for mirror probing  
+- `till` environments share the host kernel but isolate userland packages  
 
 ---
 
-## How It Works
+## 💡 Author
 
-- **Build** — Runs `mmdebstrap --mode=root` with selected packages.  
-  Creates `/usr/sbin/policy-rc.d` inside the chroot to prevent services from starting.
-- **Enter** — Uses `unshare -m` for auto-cleanup or legacy mounts with traps.
-- **Destroy** — Unmounts and deletes everything under the environment path.
-
----
-
-## Notes
-
-- Uses `/etc/skel` for default `.bashrc` and `.profile` if none provided.
-- IPv6 can be disabled via `IPV4_ONLY=true`.
-- To enforce apt signature verification, set `GPG_SECURE=true` and provide `TILL_KEYRING`.
-
----
-
-## Requirements
-
-- Debian / Ubuntu host  
-- `mmdebstrap`, `util-linux`, `coreutils`, `sudo`, `mount`, `bash >= 5`  
-- Optional: `curl` or `wget` for mirror probe
-
----
-
-## License
-MIT
-
+Nick Kiermaier
+Version 0.1.0
