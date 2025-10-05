@@ -3,13 +3,39 @@
 — a lightweight Bash tool for creating isolated Debian root environments using `mmdebstrap` and `chroot`.
 
 ---
+ ## 🧩 Compatibility
 
-## Compatibility
+`till` is designed for **Debian-based systems** and works best on modern distributions that include `mmdebstrap`.
+
+### Supported Systems
+- **Debian 11 (Bullseye)** and later  
+- **Ubuntu 22.04 (Jammy)** and later  
+- **Linux Mint 21+**, Pop!\_OS 22.04+, and other Debian derivatives  
+
+### Kernel / Architecture
+- Works on **Linux kernels ≥ 4.15**
+- Architecture: **amd64** (tested), **arm64** (supported with `mmdebstrap`)
+
+### Core Dependencies
+| Package | Minimum Version | Purpose |
+|----------|-----------------|----------|
+| `bash` | 5.0+ | Scripting language |
+| `mmdebstrap` | 1.0+ | Bootstrapping Debian rootfs |
+| `coreutils`, `util-linux`, `mount`, `sudo` | system | Chroot and mount management |
+| `curl` or `wget` | any | Mirror probing and downloads (optional) |
+
+### Notes
+- Requires **sudo privileges** to build or destroy environments  
+- Works under **systemd-nspawn** and **chroot** contexts (no containers needed)  
+- `unshare -m` (from `util-linux`) required for namespace-based auto-cleanup  
+- Tested on **Debian Bookworm** and **Ubuntu Jammy/Jellyfish**  
+- Compatible with both **IPv4** and **IPv6** networks  
 * This has only been tested on Ubuntu 22.04
 * Theoretically should work on any Debian system
 * There's ways to make it more cross compatible by using other flavors of debootstrap
   * other options are: dbootstrap, cdebootstrap, mmdebstrap, or multistrap
   * This project currently uses mmbootstrap which only works on Debian
+
 
 ## 📁 Project Layout
 
