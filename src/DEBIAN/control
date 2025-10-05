@@ -1,10 +1,15 @@
 Package: till
-Version: 1.0.0-2
+Version: 1.1.0-1
 Section: utils
 Priority: optional
 Architecture: all
-Depends: bash (>= 5), coreutils, mount, util-linux, debootstrap, apt
+Depends: bash (>= 5), coreutils, mmdebstrap, proot
 Maintainer: You <0foo.dev>
-Description: Tiny chroot manager for per-project Debian envs
- Provides 'till build' to bootstrap a minimal Debian chroot under the project,
- and 'till enter' to chroot into it with the current working directory bind-mounted.
+Description: Tiny rootless Debian env manager for per-project dev (mmdebstrap + proot)
+ This tool bootstraps a minimal Debian rootfs per project using mmdebstrap
+ (rootless) and enters it with proot (also rootless). The current working
+ directory is bind-mounted inside by default, preserving your usual workflow.
+ .
+ Commands:
+  - 'till build'  : create/update the rootfs under the project
+  - 'till enter'  : proot into it (use --no-bind-pwd to disable PWD bind, --as-root for fake root)

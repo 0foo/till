@@ -1,5 +1,50 @@
-# System-wide defaults for till
+# Default configuration for "till"
+# Place in one of (lower items override higher ones):
+#   /etc/till/config
+#   ~/.config/till/config
+#   ./.tillrc
+#   ./.till/config
+
+# ---- Core settings ----
+# Rootfs directory (default: $PWD/.till/debian if unset)
+PATH=.till/debian
+
+# Debian release codename
 RELEASE=bookworm
-MIRROR=http://deb.debian.org/debian
+
+# Debian mirror
+MIRROR=http://ftp.us.debian.org/debian 
+
+# How to combine extra packages with the built-ins: append|replace
 PACKAGES_MODE=append
+
+# Extra packages to include at bootstrap (space-separated)
 PACKAGES="git build-essential"
+
+# Alternatively, list packages in a file (one per line)
+# PACKAGES_FILE=.till/packages.txt
+
+# ---- Policy / networking ----
+# Enforce apt repo signature verification (true/false).
+# If true, export TILL_KEYRING=/path/to/keyring.gpg before running `till build`.
+GPG_SECURE=false
+
+# Force apt to use IPv4 only (true/false)
+IPV4_ONLY=false
+
+# Use a private mount namespace for auto-unmount on exit (true/false)
+MOUNT_NAMESPACE=true
+
+# ---- Optional shell skeleton seeding (download into chroot) ----
+# If set, these files are fetched into <rootfs>/etc/skel and copied to /root.
+# Use HTTPS URLs; checksums are optional but recommended.
+
+# URL for default .bashrc to place in /etc/skel/.bashrc and /root/.bashrc
+# BASHRC_URL=https://example.com/dotfiles/bashrc
+# SHA-256 checksum (hex, no spaces) for fetched .bashrc
+# BASHRC_SHA256=
+
+# URL for default .profile to place in /etc/skel/.profile and /root/.profile
+# BASHPROFILE_URL=https://example.com/dotfiles/profile
+# SHA-256 checksum (hex, no spaces) for fetched .profile
+# BASHPROFILE_SHA256=

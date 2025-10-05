@@ -1,188 +1,175 @@
-# till
-*A tiny Debian chroot manager for per-project environments*
+# till — tiny per-project Debian environments (CHROOT edition)
 
-`till` makes it easy to create isolated Debian environments per project — using only `debootstrap` and `chroot`.  
-You can build and enter a full Debian root filesystem without containers, VMs, or mounts.
-
-* A fast, minimalist alternative to containerization when you only need filesystem and package isolation—nothing more!
+`till` is a lightweight Bash tool for creating disposable per-project Debian root filesystems using **mmdebstrap** and **real chroot** — no containers, no virtualization, just isolated environments built in directories.
 
 ---
 
 ## Features
 
-- 🧱 **Create self-contained Debian roots** with `till build`
-- 🔗 **Enter** environments with `till enter`, bind-mounting your current working directory
-- ⚙️ **Configurable** via per-project or global config files
-- 💼 **Portable** — works anywhere on Debian-based systems
-- 🧩 **Custom package sets** via config or CLI
+- Real Debian rootfs (no Docker required)  
+- Automatic cleanup using private mount namespaces (`unshare -m`)  
+- Configurable package sets per project  
+- Safe destruction and rebuild  
+- Works offline once bootstrapped  
+
+---
+
+## Commands
+
+| Command | Description |
+|----------|-------------|
+| `till build` | Bootstrap a Debian rootfs (requires sudo). |
+| `till enter` | Enter the rootfs; optionally bind-mount the current working directory. |
+| `till destroy` | Unmount and delete the environment. |
 
 ---
 
 ## Installation
 
-### From `.deb` file
-
 ```bash
-sudo apt install ./till_1.0.0-2.deb
-```
-
-This installs:
-
-- `/usr/bin/till`
-- `/usr/share/bash-completion/completions/till`
-- `/etc/till/config`
-
-### From source
-
-```bash
-sudo install -m 0755 till /usr/bin/till
-sudo install -Dm0644 completions/till /usr/share/bash-completion/completions/till
-sudo install -Dm0644 etc/till/config /etc/till/config
+sudo install -m 0755 till /usr/local/bin/till
+till --help
 ```
 
 ---
 
-## Basic Usage
+## Quick Start
 
 ```bash
-till build             # Bootstrap Debian root at ./.till/debian
-till enter             # Enter it, bind-mounting current directory
-till enter --as-root   # Enter as root inside the chroot
-till build --path ~/envs/projA --packages "git python3"
-```
+# Create a minimal Debian environment in ./.till/debian
+till build
 
-When entering, your user ID and group ID are mapped so files created inside the chroot belong to you on the host.  
-Use `--as-root` to perform administrative tasks within the chroot (e.g. creating users, editing `/etc`).
+# Enter it (bind-mounts your current working directory by default)
+till enter
+
+# Destroy when done
+till destroy
+```
 
 ---
 
 ## Configuration
 
-`till` loads configuration from the following locations, in order of precedence:
+`till` reads configuration from these locations (highest precedence first):
 
 1. `./.till/config`  
 2. `./.tillrc`  
 3. `~/.config/till/config`  
 4. `/etc/till/config`
 
-Example `./.till/config`:
+Example configuration file (`~/.config/till/config`):
 
 ```ini
-# Path where the chroot will be created
+# Rootfs location
 PATH=.till/debian
 
-# Debian release to use
+# Debian release codename
 RELEASE=bookworm
 
-# Debian mirror to use
+# Mirror URL
 MIRROR=http://deb.debian.org/debian
 
-# append (default) = add to default tools
-# replace = use only the packages below
+# Package handling: append or replace built-ins
 PACKAGES_MODE=append
+PACKAGES="git build-essential"
 
-# Extra packages to install
-PACKAGES="git make python3 python3-venv"
+# Networking & security
+GPG_SECURE=false
+IPV4_ONLY=false
 
-# Optional: external package list file
-PACKAGES_FILE=.till/packages.txt
+# Namespace mode
+MOUNT_NAMESPACE=true
 ```
 
-`.till/packages.txt`:
+Environment variables:
 
-```
-# one per line, comments allowed
-ripgrep
-fd-find
-htop
-```
+| Variable | Description |
+|-----------|--------------|
+| `TILL_VERBOSE=1` | Enable verbose mode. |
+| `TILL_KEYRING=/path/to/keyring.gpg` | Used when `GPG_SECURE=true`. |
 
 ---
 
 ## Command Reference
 
-### `till build`
-
-Bootstraps a Debian environment at the configured path.  
-Installs common utilities and any extra packages from your config.
-
-Options:
-
-| Option | Description |
-|---------|-------------|
-| `--path` | Location of the chroot (default `.till/debian`) |
-| `--release` | Debian codename (default `bookworm`) |
-| `--mirror` | Mirror URL (default `http://deb.debian.org/debian`) |
-| `--packages` | Space-separated list of packages to install |
-| `--packages-file` | Path to a file with one package per line |
-| `--packages-mode` | `append` or `replace` (default `append`) |
-
-### `till enter`
-
-Enters the environment (bind-mounts your current directory by default).
-
-Options:
-
-| Option | Description |
-|---------|-------------|
-| `--path` | Location of the chroot |
-| `--no-bind-pwd` | Do not bind-mount current working directory |
-| `--as-root` | Enter as root instead of your own UID/GID |
-
----
-
-## Example Workflow
+### Build
 
 ```bash
-# 1. Initialize environment
-till build
+till build [--path PATH] [--release REL] [--mirror URL]
+           [--packages "pkg1 pkg2"] [--packages-file FILE]
+           [--packages-mode append|replace] [--verbose]
+```
 
-# 2. Enter it
-till enter
+- Bootstraps a new Debian environment using `mmdebstrap`.
+- Default includes core utilities like `bash`, `coreutils`, `sudo`, `vim-tiny`, etc.
 
-# 3. Inside, install or run whatever you want
-apt install gcc
-exit
+Example:
 
-# 4. Enter again later
-till enter
+```bash
+till build --release trixie --packages "git curl make"
 ```
 
 ---
 
-## Configuration Hierarchy
+### Enter
 
-| Level | Path | Purpose |
-|--------|------|----------|
-| System | `/etc/till/config` | Organization-wide defaults |
-| User | `~/.config/till/config` | Personal defaults |
-| Project | `./.till/config` or `./.tillrc` | Per-project overrides |
+```bash
+till enter [--path PATH] [--no-bind-pwd] [--as-root]
+           [--no-ns] [--verbose]
+```
+
+- Starts a shell inside the chroot.
+- By default, uses a private mount namespace that cleans up automatically when you exit.
+
+Example:
+
+```bash
+till enter --as-root
+```
 
 ---
 
-## Default System Config
+### Destroy
 
-`/etc/till/config`:
-
-```ini
-RELEASE=bookworm
-MIRROR=http://deb.debian.org/debian
-PACKAGES_MODE=append
-PACKAGES="git build-essential"
+```bash
+till destroy [--path PATH] [--force] [--verbose]
 ```
+
+- Unmounts all mounts and deletes the rootfs directory.
+
+Example:
+
+```bash
+till destroy --force
+```
+
+---
+
+## How It Works
+
+- **Build** — Runs `mmdebstrap --mode=root` with selected packages.  
+  Creates `/usr/sbin/policy-rc.d` inside the chroot to prevent services from starting.
+- **Enter** — Uses `unshare -m` for auto-cleanup or legacy mounts with traps.
+- **Destroy** — Unmounts and deletes everything under the environment path.
 
 ---
 
 ## Notes
 
-- No `/proc`, `/sys`, or `/dev/pts` mounts are used by default (for safety).  
-  Add them manually if needed.
-- Uses your user UID/GID for normal sessions, preventing root-owned files on your host.
-- Fully self-contained — delete the environment directory to remove it.
+- Uses `/etc/skel` for default `.bashrc` and `.profile` if none provided.
+- IPv6 can be disabled via `IPV4_ONLY=true`.
+- To enforce apt signature verification, set `GPG_SECURE=true` and provide `TILL_KEYRING`.
+
+---
+
+## Requirements
+
+- Debian / Ubuntu host  
+- `mmdebstrap`, `util-linux`, `coreutils`, `sudo`, `mount`, `bash >= 5`  
+- Optional: `curl` or `wget` for mirror probe
 
 ---
 
 ## License
-
 MIT
 
