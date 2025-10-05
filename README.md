@@ -1,4 +1,3 @@
-```markdown
 # till
 *A tiny Debian chroot manager for per-project environments*
 
@@ -184,4 +183,4 @@ PACKAGES="git build-essential"
 ## License
 
 MIT
-```
+
