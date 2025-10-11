@@ -1,21 +1,138 @@
 # bash completion for till
+# Requires bash-completion (for _init_completion); falls back gracefully.
+
+# Fallback for _init_completion if bash-completion isn't loaded
+if ! declare -F _init_completion >/dev/null 2>&1; then
+  _init_completion() {
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+    words=("${COMP_WORDS[@]}")
+    cword=$COMP_CWORD
+    return 0
+  }
+fi
+
 _till()
 {
   local cur prev words cword
   _init_completion || return
 
+  # Subcommands
+  local subcmds="build enter destroy show-config config --help -h"
+  # Global-ish flags (some subcommands also accept --verbose)
+  local global_flags="--verbose"
+
+  # If completing the subcommand itself
   if [[ $cword -eq 1 ]]; then
-    COMPREPLY=( $(compgen -W "build enter --help -h" -- "$cur") )
+    COMPREPLY=( $(compgen -W "$subcmds" -- "$cur") )
     return
   fi
 
-  case "${words[1]}" in
+  # Determine the subcommand (first non-flag token)
+  local scmd
+  for token in "${words[@]:1}"; do
+    case "$token" in
+      build|enter|destroy|show-config|config|-h|--help) scmd="$token"; break ;;
+    esac
+  done
+  [[ -z "$scmd" ]] && scmd="${words[1]}"
+
+  # Utility: set filename completion when expecting files/paths
+  _complete_files() {
+    # prefer files; caller can switch to dirs with compgen -d
+    compopt -o filenames 2>/dev/null
+    COMPREPLY=( $(compgen -f -- "$cur") )
+  }
+  _complete_dirs() {
+    compopt -o filenames 2>/dev/null
+    COMPREPLY=( $(compgen -d -- "$cur") )
+  }
+
+  case "$scmd" in
     build)
-      COMPREPLY=( $(compgen -W "--path --release --mirror --packages --packages-file --packages-mode" -- "$cur") )
+      # Flags for build
+      #   --path <dir>
+      #   --release <codename>
+      #   --mirror <url>
+      #   --packages "<space sep>"
+      #   --packages-file <file>
+      #   --packages-mode [append|replace]
+      #   --verbose
+      case "$prev" in
+        --path)
+          _complete_dirs; return ;;
+        --release)
+          # common Debian codenames
+          COMPREPLY=( $(compgen -W "trixie bookworm bullseye buster sid" -- "$cur") )
+          return ;;
+        --mirror)
+          # a few common mirrors
+          COMPREPLY=( $(compgen -W \
+            "http://deb.debian.org/debian http://ftp.us.debian.org/debian https://mirrorservice.org/sites/ftp.debian.org/debian" \
+            -- "$cur") )
+          return ;;
+        --packages-mode)
+          COMPREPLY=( $(compgen -W "append replace" -- "$cur") )
+          return ;;
+        --packages)
+          # free-form; no special completion
+          return ;;
+        --packages-file)
+          _complete_files; return ;;
+      esac
+      COMPREPLY=( $(compgen -W "--path --release --mirror --packages --packages-file --packages-mode --verbose" -- "$cur") )
       ;;
+
     enter)
-      COMPREPLY=( $(compgen -W "--path --no-bind-pwd --as-root" -- "$cur") )
+      # Flags for enter
+      #   --path <dir>
+      #   --no-bind-pwd
+      #   --as-root
+      #   --no-ns
+      #   --grant-acl
+      #   --acl-user <user>
+      #   --acl-in-chroot <abs path>
+      #   --verbose
+      case "$prev" in
+        --path)
+          _complete_dirs; return ;;
+        --acl-user)
+          # complete system users
+          COMPREPLY=( $(compgen -u -- "$cur") )
+          return ;;
+        --acl-in-chroot)
+          # treat as path; still complete from host FS (best-effort)
+          _complete_files; return ;;
+      esac
+      COMPREPLY=( $(compgen -W "--path --no-bind-pwd --as-root --no-ns --grant-acl --acl-user --acl-in-chroot --verbose" -- "$cur") )
+      ;;
+
+    destroy)
+      # Flags for destroy
+      #   --path <dir>
+      #   --force|-f
+      #   --verbose
+      case "$prev" in
+        --path)
+          _complete_dirs; return ;;
+      esac
+      COMPREPLY=( $(compgen -W "--path --force -f --verbose" -- "$cur") )
+      ;;
+
+    show-config|config)
+      # No flags currently; just complete nothing or global flags
+      COMPREPLY=( $(compgen -W "$global_flags" -- "$cur") )
+      ;;
+
+    -h|--help)
+      COMPREPLY=()
+      ;;
+
+    *)
+      # Fallback: offer subcommands
+      COMPREPLY=( $(compgen -W "$subcmds" -- "$cur") )
       ;;
   esac
 }
+
 complete -F _till till

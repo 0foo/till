@@ -1,18 +1,31 @@
-Package: till
-Version: 1.1.0-1
+Source: till
 Section: utils
 Priority: optional
+Maintainer: Nick K <nick@example.com>
+Homepage: https://github.com/0foo/till
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+Package: till
 Architecture: all
-Depends: bash (>= 5), coreutils, util-linux, mmdebstrap, sudo
+Version: 1.2.0-1
+Depends: bash (>= 5), coreutils, util-linux (>= 2.36), mmdebstrap, sudo, acl
 Recommends: bash-completion
-Maintainer: You <0foo.dev>
-Description: Tiny per-project Debian chroot environment manager (mmdebstrap + chroot)
+Suggests: ca-certificates, curl | wget
+Description: Tiny per-project Debian chroot manager (mmdebstrap + chroot)
  This tool bootstraps a minimal Debian root filesystem per project using
  mmdebstrap and provides convenient commands to enter and destroy it
- using real chroot isolation. By default, it uses unshare-based mount
- namespaces for automatic cleanup when you exit.
+ using real chroot isolation. By default it uses an unshare-based private
+ mount namespace so bind mounts auto-clean when you exit.
+ .
+ Features:
+  - Per-project rootfs under .till/debian (configurable)
+  - Private mount namespace (auto-unmount on exit) or legacy mounts
+  - Optional ACL grants so host tools can read/write chroot-bound trees
+  - Robust config loader with overrides and inline-comment support
+  - 'show-config' subcommand to print effective values + sources
  .
  Commands:
-  - 'till build'   : create or update the Debian rootfs
-  - 'till enter'   : enter the environment (bind-mounts PWD by default)
-  - 'till destroy' : unmount and delete the environment
+  - till build        : create/update the Debian rootfs
+  - till enter        : enter the env (bind-mounts $PWD by default)
+  - till destroy      : unmount and delete the environment
+  - till show-config  : display effective params and their sources

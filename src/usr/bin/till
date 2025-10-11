@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # till — tiny per-project Debian environments (CHROOT edition: mmdebstrap + real chroot)
-# - till build   : bootstrap a Debian rootfs (requires sudo)
-# - till enter   : enter the rootfs; bind-mount $PWD (optional)
-#                  by default uses a private mount namespace so EVERYTHING
-#                  unmounts automatically when you exit the shell
-# - till destroy : unmount everything under the rootfs and delete it
+# - till build        : bootstrap a Debian rootfs (requires sudo)
+# - till enter        : enter the rootfs; bind-mount $PWD (optional)
+#                       by default uses a private mount namespace so EVERYTHING
+#                       unmounts automatically when you exit the shell
+# - till destroy      : unmount everything under the rootfs and delete it
+# - till show-config  : print effective params + where each came from
 #
-# Config precedence (highest first):
-#   ./.till/config, ./.tillrc, ~/.config/till/config, /etc/till/config
+# Config precedence (lowest -> highest):
+#   /etc/till/config  <  ~/.config/till/config  <  ./.tillrc  <  ./.till/config
 #
 # Config keys:
 #   PATH=<path>                    # rootfs dir (default: $PWD/.till/debian)
@@ -19,15 +20,20 @@
 #   GPG_SECURE=true|false          # true=enforce sig verification; false=allow insecure
 #   IPV4_ONLY=true|false           # true=force IPv4 (apt); default false
 #   MOUNT_NAMESPACE=true|false     # true=use unshare -m (auto cleanup); default true
+#   ACL_AUTO=true|false            # true=apply ACLs on enter (default false)
+#   ACL_USER=<username>            # user to grant ACLs to (default SUDO_USER or USER)
 #
 # Flags / env:
 #   --verbose or TILL_VERBOSE=1
 #   --no-bind-pwd (enter)  # do not bind the current working directory
 #   --as-root (enter)      # enter as root (default: your uid/gid)
 #   --no-ns (enter)        # disable mount namespace (use legacy+trap cleanup)
+#   --grant-acl            # grant ACLs on host $PWD and bind target inside chroot
+#   --acl-user USER        # override ACL target user
+#   --acl-in-chroot PATH   # additionally ACL an absolute PATH inside chroot
 #   TILL_KEYRING=/path/to/keyring.gpg (optional) when GPG_SECURE=true
 #
-# Requires (Debian/Ubuntu): mmdebstrap, bash ≥5, coreutils, util-linux, mount
+# Requires (Debian/Ubuntu): mmdebstrap, bash ≥5, coreutils, util-linux, mount, acl
 # This script uses sudo for privileged operations.
 
 set -euo pipefail
@@ -58,45 +64,23 @@ TILL_KEYRING="${TILL_KEYRING:-}"
 
 COMMON_PKGS_DEFAULT=(bash coreutils findutils grep sed gawk tar gzip bzip2 xz-utils less ca-certificates curl wget iputils-ping procps nano vim-tiny unzip zip sudo)
 
-# ---------- Config ----------
-TILL_CONFIG_PROJECT_1="$PWD/.till/config"
-TILL_CONFIG_PROJECT_2="$PWD/.tillrc"
-TILL_CONFIG_USER="$HOME/.config/till/config"
+# ---------- Config files ----------
 TILL_CONFIG_SYSTEM="/etc/till/config"
+TILL_CONFIG_USER="$HOME/.config/till/config"
+TILL_CONFIG_PROJECT_2="$PWD/.tillrc"
+TILL_CONFIG_PROJECT_1="$PWD/.till/config"
 
-CFG_PATH=""; CFG_RELEASE=""; CFG_MIRROR=""; CFG_PACKAGES_MODE=""; CFG_PACKAGES=""; CFG_PACKAGES_FILE=""
+# ---------- Raw config vars (as parsed) ----------
+CFG_PATH=""; CFG_RELEASE=""; CFG_MIRROR=""
+CFG_PACKAGES_MODE=""; CFG_PACKAGES=""; CFG_PACKAGES_FILE=""
 CFG_GPG_SECURE=""; CFG_IPV4_ONLY=""; CFG_MOUNT_NAMESPACE=""
+CFG_ACL_AUTO=""; CFG_ACL_USER=""
 
-_read_kv_file() {
-  local f="$1"
-  [[ -f "$f" ]] || return 0
-  while IFS= read -r line; do
-    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
-    if [[ "$line" =~ ^([A-Z_]+)=(.*)$ ]]; then
-      local k="${BASH_REMATCH[1]}"; local v="${BASH_REMATCH[2]}"
-      v="${v%\"}"; v="${v#\"}"; v="${v%\'}"; v="${v#\'}"
-      case "$k" in
-        PATH)               CFG_PATH="$v" ;;
-        RELEASE)            CFG_RELEASE="$v" ;;
-        MIRROR)             CFG_MIRROR="$v" ;;
-        PACKAGES_MODE)      CFG_PACKAGES_MODE="$v" ;;
-        PACKAGES)           CFG_PACKAGES="$v" ;;
-        PACKAGES_FILE)      CFG_PACKAGES_FILE="$v" ;;
-        GPG_SECURE)         CFG_GPG_SECURE="$v" ;;
-        IPV4_ONLY)          CFG_IPV4_ONLY="$v" ;;
-        MOUNT_NAMESPACE)    CFG_MOUNT_NAMESPACE="$v" ;;
-      esac
-    fi
-  done < "$f"
-}
+# ---------- Source tracking for show-config ----------
+declare -A CFG_SRC=()   # key -> source file or "default"
+declare -A CFG_SEEN=()  # key -> 1 if set by any config file
 
-_load_config() {
-  _read_kv_file "$TILL_CONFIG_SYSTEM"
-  _read_kv_file "$TILL_CONFIG_USER"
-  _read_kv_file "$TILL_CONFIG_PROJECT_2"
-  _read_kv_file "$TILL_CONFIG_PROJECT_1"
-}
-
+# ---------- Helpers ----------
 _bool_norm() {
   case "${1,,}" in
     1|true|yes|y|on)  echo "true" ;;
@@ -120,11 +104,70 @@ _probe_mirror() {
   fi
 }
 
+# Robust KV parser: allow spaces around "=", strip inline comments, trim quotes/space.
+# _read_kv_file <file>
+_read_kv_file() {
+  local f="$1"
+  [[ -f "$f" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    # skip blank / full-line comments
+    [[ -z "${line//[[:space:]]/}" || "$line" =~ ^[[:space:]]*# ]] && continue
+    if [[ "$line" =~ ^([A-Z_]+)[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+      local k="${BASH_REMATCH[1]}"; local v="${BASH_REMATCH[2]}"
+      v="${v%%#*}"                    # drop inline comments
+      v="${v%\"}"; v="${v#\"}"        # drop surrounding double quotes
+      v="${v%\'}"; v="${v#\'}"        # drop surrounding single quotes
+      v="${v#"${v%%[![:space:]]*}"}"  # ltrim
+      v="${v%"${v##*[![:space:]]}"}"  # rtrim
+      case "$k" in
+        PATH)               CFG_PATH="$v"; CFG_SRC[PATH]="$f"; CFG_SEEN[PATH]=1 ;;
+        RELEASE)            CFG_RELEASE="$v"; CFG_SRC[RELEASE]="$f"; CFG_SEEN[RELEASE]=1 ;;
+        MIRROR)             CFG_MIRROR="$v"; CFG_SRC[MIRROR]="$f"; CFG_SEEN[MIRROR]=1 ;;
+        PACKAGES_MODE)      CFG_PACKAGES_MODE="$v"; CFG_SRC[PACKAGES_MODE]="$f"; CFG_SEEN[PACKAGES_MODE]=1 ;;
+        PACKAGES)           CFG_PACKAGES="$v"; CFG_SRC[PACKAGES]="$f"; CFG_SEEN[PACKAGES]=1 ;;
+        PACKAGES_FILE)      CFG_PACKAGES_FILE="$v"; CFG_SRC[PACKAGES_FILE]="$f"; CFG_SEEN[PACKAGES_FILE]=1 ;;
+        GPG_SECURE)         CFG_GPG_SECURE="$v"; CFG_SRC[GPG_SECURE]="$f"; CFG_SEEN[GPG_SECURE]=1 ;;
+        IPV4_ONLY)          CFG_IPV4_ONLY="$v"; CFG_SRC[IPV4_ONLY]="$f"; CFG_SEEN[IPV4_ONLY]=1 ;;
+        MOUNT_NAMESPACE)    CFG_MOUNT_NAMESPACE="$v"; CFG_SRC[MOUNT_NAMESPACE]="$f"; CFG_SEEN[MOUNT_NAMESPACE]=1 ;;
+        ACL_AUTO)           CFG_ACL_AUTO="$v"; CFG_SRC[ACL_AUTO]="$f"; CFG_SEEN[ACL_AUTO]=1 ;;
+        ACL_USER)           CFG_ACL_USER="$v"; CFG_SRC[ACL_USER]="$f"; CFG_SEEN[ACL_USER]=1 ;;
+      esac
+    fi
+  done < "$f"
+}
+
+# Load all configs in precedence (lowest -> highest)
+_load_config() {
+  _read_kv_file "$TILL_CONFIG_SYSTEM"
+  _read_kv_file "$TILL_CONFIG_USER"
+  _read_kv_file "$TILL_CONFIG_PROJECT_2"
+  _read_kv_file "$TILL_CONFIG_PROJECT_1"
+}
+
 # ---------- Privilege helper ----------
 sudo_exec() {
   if [[ $EUID -ne 0 ]]; then
     exec sudo --preserve-env=TILL_KEYRING,TILL_VERBOSE,PATH,PWD "$0" "$subcmd" "$@"
   fi
+}
+
+# ---------- ACL helper ----------
+_grant_acl_dir() {
+  local user="$1" dir="$2" label="${3:-ACL}"
+  _need setfacl
+  if [[ ! -d "$dir" ]]; then
+    warn "$label: target directory does not exist: $dir"
+    return 0
+  fi
+  info "$label: granting rwX to user '$user' on $dir"
+  # Existing files/dirs
+  setfacl -R -m u:"$user":rwX "$dir"
+  # Ensure mask allows rwX
+  setfacl -R -m m:rwX "$dir" 2>/dev/null || true
+  # Default ACLs for NEW files/dirs under each directory
+  find "$dir" -type d -print0 | xargs -0 -r setfacl -m d:u:"$user":rwX 2>/dev/null || true
+  find "$dir" -type d -print0 | xargs -0 -r setfacl -m d:m:rwX       2>/dev/null || true
+  ok "$label: applied on $dir"
 }
 
 # ---------- Unmount helper (legacy path & destroy) ----------
@@ -139,19 +182,74 @@ _unmount_all() {
   done
 }
 
+# ---------- SHOW CONFIG (effective values + source) ----------
+_print_row() {
+  # _print_row NAME VALUE SOURCE DEFAULT
+  local n="$1" v="$2" s="$3" d="$4"
+  printf "%-18s : %s\n" "$n" "${v:-<empty>}"
+  printf "  %-16s %s\n" "source" "${s:-default}"
+  printf "  %-16s %s\n" "default" "$d"
+}
+
+cmd_show_config() {
+  # Resolve effective values similarly to the subcommands
+  local eff_PATH eff_RELEASE eff_MIRROR eff_PACKAGES_MODE eff_PACKAGES eff_PACKAGES_FILE
+  local eff_GPG eff_IPV4 eff_NS eff_ACL_AUTO eff_ACL_USER eff_KEYRING eff_VERBOSE
+
+  eff_PATH="${CFG_PATH:-$TILL_PATH_DEFAULT}"
+  eff_RELEASE="${CFG_RELEASE:-$TILL_RELEASE_DEFAULT}"
+  eff_MIRROR="${CFG_MIRROR:-$TILL_MIRROR_DEFAULT}"
+  eff_PACKAGES_MODE="${CFG_PACKAGES_MODE:-append}"
+  eff_PACKAGES="${CFG_PACKAGES:-}"
+  eff_PACKAGES_FILE="${CFG_PACKAGES_FILE:-}"
+  eff_GPG="$(_bool_norm "${CFG_GPG_SECURE:-false}")"
+  eff_IPV4="$(_bool_norm "${CFG_IPV4_ONLY:-false}")"
+  eff_NS="$(_bool_norm "${CFG_MOUNT_NAMESPACE:-true}")"
+  eff_ACL_AUTO="$(_bool_norm "${CFG_ACL_AUTO:-false}")"
+  eff_ACL_USER="${CFG_ACL_USER:-${SUDO_USER:-$USER}}"
+  eff_KEYRING="${TILL_KEYRING:-<unset>}"
+  eff_VERBOSE="${TILL_VERBOSE:-0}"
+
+  step "Effective till configuration"
+  _print_row "PATH"            "$eff_PATH"           "${CFG_SRC[PATH]:-default}"            "\$PWD/.till/debian"
+  _print_row "RELEASE"         "$eff_RELEASE"        "${CFG_SRC[RELEASE]:-default}"         "bookworm"
+  _print_row "MIRROR"          "$eff_MIRROR"         "${CFG_SRC[MIRROR]:-default}"          "http://deb.debian.org/debian"
+  _print_row "PACKAGES_MODE"   "$eff_PACKAGES_MODE"  "${CFG_SRC[PACKAGES_MODE]:-default}"   "append"
+  _print_row "PACKAGES"        "$eff_PACKAGES"       "${CFG_SRC[PACKAGES]:-default}"        "<empty>"
+  _print_row "PACKAGES_FILE"   "$eff_PACKAGES_FILE"  "${CFG_SRC[PACKAGES_FILE]:-default}"   "<empty>"
+  _print_row "GPG_SECURE"      "$eff_GPG"            "${CFG_SRC[GPG_SECURE]:-default}"      "false"
+  _print_row "IPV4_ONLY"       "$eff_IPV4"           "${CFG_SRC[IPV4_ONLY]:-default}"       "false"
+  _print_row "MOUNT_NAMESPACE" "$eff_NS"             "${CFG_SRC[MOUNT_NAMESPACE]:-default}" "true"
+  _print_row "ACL_AUTO"        "$eff_ACL_AUTO"       "${CFG_SRC[ACL_AUTO]:-default}"        "false"
+  _print_row "ACL_USER"        "$eff_ACL_USER"       "${CFG_SRC[ACL_USER]:-default}"        "\$SUDO_USER or \$USER"
+  _print_row "TILL_KEYRING"    "$eff_KEYRING"        "env"                                  "<unset>"
+  _print_row "TILL_VERBOSE"    "$eff_VERBOSE"        "env/flag"                             "0"
+
+  echo
+  step "Config files (checked, in precedence order)"
+  printf "  %-12s %s\n" "system:"  "$TILL_CONFIG_SYSTEM"
+  printf "  %-12s %s\n" "user:"    "$TILL_CONFIG_USER"
+  printf "  %-12s %s\n" "project:" "$TILL_CONFIG_PROJECT_2"
+  printf "  %-12s %s\n" "project:" "$TILL_CONFIG_PROJECT_1"
+}
+
 # ---------- USAGE ----------
 usage() {
   cat <<EOF
 till — tiny Debian environments (mmdebstrap + real chroot)
 Usage:
-  till build   [--path PATH] [--release REL] [--mirror URL]
-               [--packages "p1 p2 ..."] [--packages-file FILE]
-               [--packages-mode append|replace] [--verbose]
+  till build        [--path PATH] [--release REL] [--mirror URL]
+                    [--packages "p1 p2 ..."] [--packages-file FILE]
+                    [--packages-mode append|replace] [--verbose]
 
-  till enter   [--path PATH] [--no-bind-pwd] [--as-root] [--no-ns] [--verbose]
-               (default uses a private mount namespace for auto-unmount on exit)
+  till enter        [--path PATH] [--no-bind-pwd] [--as-root] [--no-ns]
+                    [--grant-acl] [--acl-user USER] [--acl-in-chroot PATH] [--verbose]
+                    (default uses a private mount namespace for auto-unmount on exit)
 
-  till destroy [--path PATH] [--force]   # unmount and delete the environment
+  till destroy      [--path PATH] [--force]
+
+  till show-config  # print effective params and their sources
+  till config       # alias of show-config
 EOF
 }
 
@@ -159,13 +257,12 @@ EOF
 cmd_build() {
   sudo_exec "$@"
 
-  local PATH_DIR="${TILL_PATH_DEFAULT}" REL="${TILL_RELEASE_DEFAULT}" MIR="${TILL_MIRROR_DEFAULT}" PKG_MODE="append"
-  local -a PKGS=("${COMMON_PKGS_DEFAULT[@]}") INCLUDE=() MM_OPTS=() APT_OPTS=()
+  local PATH_DIR="${CFG_PATH:-$TILL_PATH_DEFAULT}"
+  local REL="${CFG_RELEASE:-$TILL_RELEASE_DEFAULT}"
+  local MIR="${CFG_MIRROR:-$TILL_MIRROR_DEFAULT}"
+  local PKG_MODE="${CFG_PACKAGES_MODE:-append}"
 
-  [[ -n "$CFG_PATH" ]] && PATH_DIR="$CFG_PATH"
-  [[ -n "$CFG_RELEASE" ]] && REL="$CFG_RELEASE"
-  [[ -n "$CFG_MIRROR" ]] && MIR="$CFG_MIRROR"
-  [[ -n "$CFG_PACKAGES_MODE" ]] && PKG_MODE="$CFG_PACKAGES_MODE"
+  local -a PKGS=("${COMMON_PKGS_DEFAULT[@]}") INCLUDE=() MM_OPTS=() APT_OPTS=()
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -186,8 +283,8 @@ cmd_build() {
   [[ "${TILL_VERBOSE:-0}" == "1" ]] && { MM_OPTS+=(--verbose); info "Verbose mode ON"; }
 
   # Policies
-  local GPGSEC="$(_bool_norm "${CFG_GPG_SECURE:-}")"
-  local IPV4="$(_bool_norm "${CFG_IPV4_ONLY:-}")"
+  local GPGSEC="$(_bool_norm "${CFG_GPG_SECURE:-false}")"
+  local IPV4="$(_bool_norm "${CFG_IPV4_ONLY:-false}")"
 
   if [[ "$GPGSEC" == "true" ]]; then
     info "GPG_SECURE=true — enforcing signature verification"
@@ -205,7 +302,7 @@ cmd_build() {
     info "IPV4_ONLY=false — using system default IPv4/IPv6"
   fi
 
-  # Extra packages
+  # Extra packages merged from config
   if [[ -n "${CFG_PACKAGES:-}" ]]; then read -r -a INCLUDE <<<"${CFG_PACKAGES}"; fi
   if [[ -n "${CFG_PACKAGES_FILE:-}" && -f "${CFG_PACKAGES_FILE}" ]]; then
     while IFS= read -r line; do
@@ -252,7 +349,6 @@ EOF
 
 # ---------- ENTER helpers ----------
 _enter_legacy() {
-  # Legacy path with real mounts + trap cleanup
   local PATH_DIR="$1" BIND_PWD="$2" AS_ROOT="$3"
 
   step "Preparing chroot (legacy mounts)"
@@ -295,7 +391,6 @@ _enter_legacy() {
 }
 
 _enter_namespace() {
-  # Namespace path: mounts live only inside the private mount namespace.
   local PATH_DIR="$1" BIND_PWD="$2" AS_ROOT="$3"
 
   step "Entering chroot (private mount namespace)"
@@ -308,7 +403,6 @@ _enter_namespace() {
     bind_line='mkdir -p "'"$PATH_DIR$PWD"'" && mount --bind "'"$PWD"'" "'"$PATH_DIR$PWD"'"'
   fi
 
-  # Build the chroot command (root or current user)
   local enter_cmd
   if [[ "$AS_ROOT" -eq 1 ]]; then
     enter_cmd="chroot '$PATH_DIR' /bin/bash -lc 'cd \"$PWD\"; exec bash -l'"
@@ -316,8 +410,6 @@ _enter_namespace() {
     enter_cmd="chroot --userspec='$uid:$gid' '$PATH_DIR' /bin/bash -lc 'cd \"$PWD\"; exec bash -l'"
   fi
 
-  # Run everything inside a private mount namespace; when the shell exits,
-  # the namespace dies and all mounts evaporate automatically.
   _show_cmd unshare -m bash -lc '(mount --make-rprivate / || true); ...'
   unshare -m bash -lc "
     set -e
@@ -331,7 +423,6 @@ _enter_namespace() {
     $bind_line
     $enter_cmd
   "
-  # No cleanup needed here — mounts were in the private namespace.
   ok "Exited chroot; all mounts cleaned up automatically."
 }
 
@@ -339,12 +430,16 @@ _enter_namespace() {
 cmd_enter() {
   sudo_exec "$@"
 
-  local PATH_DIR="$TILL_PATH_DEFAULT" BIND_PWD=1 AS_ROOT=0 NO_NS=0
-  [[ -n "$CFG_PATH" ]] && PATH_DIR="$CFG_PATH"
+  local PATH_DIR="${CFG_PATH:-$TILL_PATH_DEFAULT}" BIND_PWD=1 AS_ROOT=0 NO_NS=0
+  local GRANT_ACL=0 ACL_USER="${CFG_ACL_USER:-${SUDO_USER:-$USER}}"
+  local ACL_PATH_IN_CHROOT=""
 
   # Default from config: MOUNT_NAMESPACE=true unless explicitly set false
   local NS_CFG="$(_bool_norm "${CFG_MOUNT_NAMESPACE:-true}")"
   local USE_NS="$([[ "$NS_CFG" == "false" ]] && echo 0 || echo 1)"
+  # ACL default from config
+  local ACL_AUTO="$(_bool_norm "${CFG_ACL_AUTO:-false}")"
+  [[ "$ACL_AUTO" == "true" ]] && GRANT_ACL=1
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -352,11 +447,31 @@ cmd_enter() {
       --no-bind-pwd) BIND_PWD=0; shift ;;
       --as-root) AS_ROOT=1; shift ;;
       --no-ns) NO_NS=1; shift ;;
+      --grant-acl) GRANT_ACL=1; shift ;;
+      --acl-user) ACL_USER="$2"; shift 2 ;;
+      --acl-in-chroot) ACL_PATH_IN_CHROOT="$2"; shift 2 ;;
       --verbose) TILL_VERBOSE=1; shift ;;
       *) err "Unknown flag: $1"; usage; exit 2 ;;
     esac
   done
   [[ "$NO_NS" -eq 1 ]] && USE_NS=0
+
+  # Apply ACLs on host PWD and bind target inside chroot (if binding)
+  if [[ "$BIND_PWD" -eq 1 && "$GRANT_ACL" -eq 1 ]]; then
+    step "Applying ACLs on project directories"
+    _grant_acl_dir "$ACL_USER" "$PWD" "ACL(host)"
+    local bind_target="$PATH_DIR$PWD"
+    mkdir -p "$bind_target"
+    _grant_acl_dir "$ACL_USER" "$bind_target" "ACL(chroot)"
+  fi
+
+  # Optional explicit chroot path for ACLs
+  if [[ -n "$ACL_PATH_IN_CHROOT" ]]; then
+    local target_path="$PATH_DIR$ACL_PATH_IN_CHROOT"
+    step "Applying ACLs on explicit chroot path"
+    mkdir -p "$target_path"
+    _grant_acl_dir "$ACL_USER" "$target_path" "ACL(chroot-explicit)"
+  fi
 
   if [[ "$USE_NS" -eq 1 ]] && command -v unshare >/dev/null 2>&1; then
     _enter_namespace "$PATH_DIR" "$BIND_PWD" "$AS_ROOT"
@@ -370,8 +485,7 @@ cmd_enter() {
 cmd_destroy() {
   sudo_exec "$@"
 
-  local PATH_DIR="$TILL_PATH_DEFAULT" FORCE=0
-  [[ -n "$CFG_PATH" ]] && PATH_DIR="$CFG_PATH"
+  local PATH_DIR="${CFG_PATH:-$TILL_PATH_DEFAULT}" FORCE=0
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -414,11 +528,13 @@ main() {
   local rest=()
   if [[ $# -gt 0 ]]; then shift; rest=("$@"); fi
   case "$subcmd" in
-    build)   for a in "${rest[@]}"; do [[ "$a" == "--verbose" ]] && TILL_VERBOSE=1; done; cmd_build   "${rest[@]}" ;;
-    enter)   for a in "${rest[@]}"; do [[ "$a" == "--verbose" ]] && TILL_VERBOSE=1; done; cmd_enter   "${rest[@]}" ;;
-    destroy) for a in "${rest[@]}"; do [[ "$a" == "--verbose" ]] && TILL_VERBOSE=1; done; cmd_destroy "${rest[@]}" ;;
+    build)        for a in "${rest[@]}"; do [[ "$a" == "--verbose" ]] && TILL_VERBOSE=1; done; cmd_build       "${rest[@]}" ;;
+    enter)        for a in "${rest[@]}"; do [[ "$a" == "--verbose" ]] && TILL_VERBOSE=1; done; cmd_enter       "${rest[@]}" ;;
+    destroy)      for a in "${rest[@]}"; do [[ "$a" == "--verbose" ]] && TILL_VERBOSE=1; done; cmd_destroy     "${rest[@]}" ;;
+    show-config|config)
+                  cmd_show_config ;;
     -h|--help|"") usage ;;
-    *) err "Unknown subcommand: $subcmd"; usage; exit 2 ;;
+    *)            err "Unknown subcommand: $subcmd"; usage; exit 2 ;;
   esac
 }
 

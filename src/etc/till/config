@@ -1,50 +1,104 @@
-# Default configuration for "till"
-# Place in one of (lower items override higher ones):
+# =========================
+# till — project config
+# Precedence (low → high):
 #   /etc/till/config
 #   ~/.config/till/config
 #   ./.tillrc
 #   ./.till/config
+# =========================
 
-# ---- Core settings ----
-# Rootfs directory (default: $PWD/.till/debian if unset)
+
+# ─────────────────────────
+# [Core]
+# Rootfs path is where the Debian chroot is created.
+# RELEASE is the Debian codename (e.g., bookworm, trixie).
+# MIRROR is the Debian archive URL.
+# ─────────────────────────
 PATH=.till/debian
-
-# Debian release codename
 RELEASE=bookworm
+MIRROR=http://ftp.us.debian.org/debian
 
-# Debian mirror
-MIRROR=http://ftp.us.debian.org/debian 
 
-# How to combine extra packages with the built-ins: append|replace
+# ─────────────────────────
+# [Packages]
+# PACKAGES_MODE:
+#   - append  : add PACKAGES to the built-in minimal set (default)
+#   - replace : use PACKAGES only (ignore built-ins)
+# PACKAGES: space-separated list installed at bootstrap.
+# PACKAGES_FILE: optional file with one package name per line.
+# ─────────────────────────
 PACKAGES_MODE=append
-
-# Extra packages to include at bootstrap (space-separated)
 PACKAGES="git build-essential"
-
-# Alternatively, list packages in a file (one per line)
 # PACKAGES_FILE=.till/packages.txt
 
-# ---- Policy / networking ----
-# Enforce apt repo signature verification (true/false).
-# If true, export TILL_KEYRING=/path/to/keyring.gpg before running `till build`.
-GPG_SECURE=false
 
-# Force apt to use IPv4 only (true/false)
+# ─────────────────────────
+# [Policy / Networking]
+# GPG_SECURE:
+#   - true  : enforce apt repository signature verification
+#   - false : allow insecure bootstrap (useful for airgapped or custom mirrors)
+#   If true, set env TILL_KEYRING=/path/to/keyring.gpg before `till build`.
+#
+# IPV4_ONLY:
+#   - true  : force apt to use IPv4 only
+#   - false : allow IPv4/IPv6 per system defaults
+# ─────────────────────────
+GPG_SECURE=false
 IPV4_ONLY=false
 
-# Use a private mount namespace for auto-unmount on exit (true/false)
+
+# ─────────────────────────
+# [Mount Behavior]
+# MOUNT_NAMESPACE:
+#   - true  : use a private mount namespace in `till enter`
+#             (all mounts auto-unmount when you exit the shell)
+#   - false : legacy mounts with trap-based cleanup
+# ─────────────────────────
 MOUNT_NAMESPACE=true
 
-# ---- Optional shell skeleton seeding (download into chroot) ----
-# If set, these files are fetched into <rootfs>/etc/skel and copied to /root.
-# Use HTTPS URLs; checksums are optional but recommended.
 
-# URL for default .bashrc to place in /etc/skel/.bashrc and /root/.bashrc
+# ─────────────────────────
+# [ACLs: host ↔ chroot file access]
+# ACL_AUTO:
+#   - true  : when you `till enter`, automatically grant rwX to ACL_USER
+#             on the host $PWD and the bind target inside the chroot.
+#   - false : do nothing unless you pass `--grant-acl`.
+#
+# ACL_USER:
+#   - user to grant ACLs to; if unset, script uses $SUDO_USER or $USER.
+# Requirements: `setfacl/getfacl` (sudo apt install -y acl) and a filesystem
+# with ACL support (ext4/xfs typically OK).
+# ─────────────────────────
+ACL_AUTO=true
+# ACL_USER=nick
+
+
+# ─────────────────────────
+# [Optional: seed default shell files into chroot]
+# If set, these will be fetched at build into <rootfs>/etc/skel and /root.
+# Use HTTPS URLs; checksums optional but recommended.
+#
+# BASHRC_URL       : URL to fetch .bashrc
+# BASHRC_SHA256    : SHA-256 of the fetched .bashrc (hex, no spaces)
+# BASHPROFILE_URL  : URL to fetch .profile
+# BASHPROFILE_SHA256 : SHA-256 of the fetched .profile
+# ─────────────────────────
 # BASHRC_URL=https://example.com/dotfiles/bashrc
-# SHA-256 checksum (hex, no spaces) for fetched .bashrc
 # BASHRC_SHA256=
-
-# URL for default .profile to place in /etc/skel/.profile and /root/.profile
 # BASHPROFILE_URL=https://example.com/dotfiles/profile
-# SHA-256 checksum (hex, no spaces) for fetched .profile
 # BASHPROFILE_SHA256=
+
+
+# ─────────────────────────
+# [Notes]
+# - Show effective values and where they came from:
+#       till show-config
+# - Enter the chroot (binding your project dir):
+#       till enter
+# - Force ACL grant on demand:
+#       till enter --grant-acl [--acl-user youruser]
+# - Build a fresh rootfs:
+#       till build
+# - Destroy (unmount + delete) the rootfs:
+#       till destroy
+# ─────────────────────────
